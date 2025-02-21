@@ -10,6 +10,10 @@ import openpyxl
 import logging
 import os
 
+# Add after imports
+VERSION = "2.0.0"
+BUILD_DATE = "21/02/2025"  # Update this when building new versions
+
 # Create logs directory if it doesn't exist
 if not os.path.exists('logs'):
     os.makedirs('logs')
@@ -106,9 +110,9 @@ def is_valid_date(date_str):
 
 class StudentApp:
     def __init__(self, root):
-        logger.info("Starting Student Management Application")
+        logger.info(f"Starting Student Management Application v{VERSION} (Build: {BUILD_DATE})")
         self.root = root
-        self.root.title("Quản Lý Sinh Viên")
+        self.root.title(f"Quản Lý Sinh Viên - v{VERSION}")
         self.root.geometry("1000x600")
         
         # Create main container
@@ -123,18 +127,28 @@ class StudentApp:
         self.btn_frame = tk.Frame(self.main_container)
         self.btn_frame.pack(fill=tk.X, pady=10)
         
+        # Main buttons frame
+        main_btns = tk.Frame(self.btn_frame)
+        main_btns.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
         buttons = [
             ("Thêm Sinh Viên", self.show_add_student),
             ("Xóa Sinh Viên", self.show_delete_student),
             ("Cập Nhật Sinh Viên", self.show_update_student),
             ("Tìm Kiếm Sinh Viên", self.show_search_student),
             ("Quản lý Danh mục", self.show_manage_options),
-            ("Nhập/Xuất Dữ liệu", self.show_import_export)  # Add this line
+            ("Nhập/Xuất Dữ liệu", self.show_import_export)
         ]
         
         for i, (text, command) in enumerate(buttons):
-            btn = tk.Button(self.btn_frame, text=text, command=command, width=15)
+            btn = tk.Button(main_btns, text=text, command=command, width=15)
             btn.pack(side=tk.LEFT, padx=5)
+        
+        # Version info button (right-aligned)
+        version_btn = tk.Button(self.btn_frame, text="v" + VERSION, 
+                              command=self.show_version_info,
+                              width=8, relief=tk.FLAT)
+        version_btn.pack(side=tk.RIGHT, padx=5)
 
     def display_student_info(self, student):
         # Clear previous student info if exists
@@ -858,6 +872,14 @@ class StudentApp:
         except Exception as e:
             logger.error(f"Error during export: {str(e)}")
             messagebox.showerror("Lỗi", f"Lỗi khi xuất file: {str(e)}")
+
+    def show_version_info(self):
+        """Show version information dialog"""
+        version_text = f"""Quản Lý Sinh Viên
+Version: {VERSION}
+Build Date: {BUILD_DATE}
+    """
+        messagebox.showinfo("Thông tin phiên bản", version_text)
 
 def main():
     try:
