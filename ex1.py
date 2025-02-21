@@ -7,6 +7,23 @@ import csv
 import pandas as pd
 from tkinter import filedialog
 import openpyxl
+import logging
+import os
+
+# Create logs directory if it doesn't exist
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] - %(message)s',
+    handlers=[
+        logging.FileHandler(f'logs/student_manager_{datetime.now().strftime("%Y%m%d")}.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Database connection
 conn = sqlite3.connect("students.db")
@@ -89,6 +106,7 @@ def is_valid_date(date_str):
 
 class StudentApp:
     def __init__(self, root):
+        logger.info("Starting Student Management Application")
         self.root = root
         self.root.title("Quản Lý Sinh Viên")
         self.root.geometry("1000x600")
@@ -495,6 +513,7 @@ class StudentApp:
         
         # Validate input
         if not data["Họ Tên"]:
+            logger.warning(f"Update failed - Empty name for MSSV: {mssv}")
             messagebox.showerror("Lỗi", "Họ Tên không được để trống!")
             return
         if not is_valid_date(data["Ngày sinh"]):
@@ -526,6 +545,7 @@ class StudentApp:
                 data["Tình trạng"], mssv
             ))
             conn.commit()
+            logger.info(f"Updated student: {mssv} - {data['Họ Tên']}")
             messagebox.showinfo("Thành công", "Cập nhật thông tin sinh viên thành công!")
             self.refresh_tree()
             
@@ -534,6 +554,7 @@ class StudentApp:
                 entry.delete(0, tk.END)
                 
         except sqlite3.Error as e:
+            logger.error(f"Database error while updating student {mssv}: {str(e)}")
             messagebox.showerror("Lỗi", f"Lỗi khi cập nhật: {str(e)}")
         
         tk.Button(self.current_frame, text="Tìm Kiếm", command=self.search_student).pack(side=tk.LEFT, padx=5)
@@ -560,6 +581,7 @@ class StudentApp:
         
         error = self.validate_input(data)
         if error:
+            logger.warning(f"Invalid student data: {error}")
             messagebox.showerror("Lỗi", error)
             return
 
@@ -574,33 +596,42 @@ class StudentApp:
                 data["Email"], data["Số điện thoại"], data["Tình trạng"]
             ))
             conn.commit()
+            logger.info(f"Added new student: {data['MSSV']} - {data['Họ Tên']}")
             messagebox.showinfo("Thành công", "Thêm sinh viên thành công!")
             self.refresh_tree()
             
-            # Clear entries
             for entry in self.entries.values():
                 entry.delete(0, tk.END)
                 
         except sqlite3.IntegrityError:
+            logger.error(f"Failed to add student - Duplicate MSSV: {data['MSSV']}")
             messagebox.showerror("Lỗi", "MSSV đã tồn tại!")
     
     def delete_student(self):
         mssv = self.mssv_delete_entry.get().strip()
         if not mssv:
+            logger.warning("Delete attempted without MSSV")
             messagebox.showerror("Lỗi", "Vui lòng nhập MSSV!")
             return
             
-        cursor.execute("SELECT * FROM students WHERE mssv = ?", (mssv,))
-        if not cursor.fetchone():
+        cursor.execute("SELECT name FROM students WHERE mssv = ?", (mssv,))
+        student = cursor.fetchone()
+        if not student:
+            logger.warning(f"Delete attempted - Student not found: {mssv}")
             messagebox.showerror("Lỗi", "Không tìm thấy sinh viên!")
             return
             
         if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn xóa sinh viên này?"):
-            cursor.execute("DELETE FROM students WHERE mssv = ?", (mssv,))
-            conn.commit()
-            messagebox.showinfo("Thành công", "Xóa sinh viên thành công!")
-            self.refresh_tree()
-            self.mssv_delete_entry.delete(0, tk.END)
+            try:
+                cursor.execute("DELETE FROM students WHERE mssv = ?", (mssv,))
+                conn.commit()
+                logger.info(f"Deleted student: {mssv} - {student[0]}")
+                messagebox.showinfo("Thành công", "Xóa sinh viên thành công!")
+                self.refresh_tree()
+                self.mssv_delete_entry.delete(0, tk.END)
+            except sqlite3.Error as e:
+                logger.error(f"Error deleting student {mssv}: {str(e)}")
+                messagebox.showerror("Lỗi", f"Lỗi khi xóa: {str(e)}")
 
     def show_manage_options(self):
         self.clear_frame()
@@ -718,11 +749,13 @@ class StudentApp:
                  command=lambda: self.export_data('excel')).pack(side=tk.LEFT, padx=5, pady=5)
 
     def import_data(self, format_type):
-        filetypes = [('CSV files', '*.csv')] if format_type == 'csv' else [('Excel files', '*.xlsx')]
-        filename = filedialog.askopenfilename(filetypes=filetypes)
+        filename = filedialog.askopenfilename(
+            filetypes=[('CSV files', '*.csv')] if format_type == 'csv' else [('Excel files', '*.xlsx')]
+        )
         if not filename:
             return
             
+        logger.info(f"Importing data from {filename}")
         try:
             if format_type == 'csv':
                 df = pd.read_csv(filename)
@@ -778,20 +811,23 @@ class StudentApp:
                     error_count += 1
                     
             conn.commit()
+            logger.info(f"Import completed: {success_count} successful, {error_count} failed")
             messagebox.showinfo("Thành công", 
                               f"Đã nhập {success_count} sinh viên!\nLỗi: {error_count} sinh viên")
             self.refresh_tree()
             
         except Exception as e:
+            logger.error(f"Error during import: {str(e)}")
             messagebox.showerror("Lỗi", f"Lỗi khi đọc file: {str(e)}")
 
     def export_data(self, format_type):
-        filetypes = [('CSV files', '*.csv')] if format_type == 'csv' else [('Excel files', '*.xlsx')]
-        filename = filedialog.asksaveasfilename(filetypes=filetypes, 
-                                              defaultextension=filetypes[0][1])
+        filename = filedialog.asksaveasfilename(
+            filetypes=[('CSV files', '*.csv')] if format_type == 'csv' else [('Excel files', '*.xlsx')]
+        )
         if not filename:
             return
             
+        logger.info(f"Exporting data to {filename}")
         try:
             cursor.execute('''
                 SELECT mssv, name, dob, gender, faculty, course,
@@ -816,9 +852,11 @@ class StudentApp:
             else:
                 df.to_excel(filename, index=False)
                 
+            logger.info(f"Export completed successfully to {filename}")
             messagebox.showinfo("Thành công", "Xuất dữ liệu thành công!")
             
         except Exception as e:
+            logger.error(f"Error during export: {str(e)}")
             messagebox.showerror("Lỗi", f"Lỗi khi xuất file: {str(e)}")
 
 def main():
