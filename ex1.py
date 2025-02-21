@@ -25,12 +25,49 @@ cursor.execute('''
         status TEXT
     )
 ''')
-conn.commit()
+
+# Create settings table for dynamic options
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS settings (
+        category TEXT,
+        value TEXT,
+        UNIQUE(category, value)
+    )
+''')
+
+# Initialize default values if table is empty
+def init_default_settings():
+    default_values = {
+        'faculty': ["Khoa Luật", "Khoa Tiếng Anh thương mại", "Khoa Tiếng Nhật", "Khoa Tiếng Pháp"],
+        'status': ["Đang học", "Đã tốt nghiệp", "Đã thôi học", "Tạm dừng học"],
+        'program': ["Cử nhân", "Thạc sĩ", "Tiến sĩ"]
+    }
+    
+    cursor.execute("SELECT COUNT(*) FROM settings")
+    if cursor.fetchone()[0] == 0:
+        for category, values in default_values.items():
+            for value in values:
+                cursor.execute("INSERT INTO settings (category, value) VALUES (?, ?)", 
+                             (category, value))
+        conn.commit()
+
+init_default_settings()
+
+# Replace the constants with functions to get values from database
+def get_valid_options(category):
+    cursor.execute("SELECT value FROM settings WHERE category = ?", (category,))
+    return [row[0] for row in cursor.fetchall()]
 
 # Constants
-VALID_FACULTIES = ["Khoa Luật", "Khoa Tiếng Anh thương mại", "Khoa Tiếng Nhật", "Khoa Tiếng Pháp"]
-VALID_STATUSES = ["Đang học", "Đã tốt nghiệp", "Đã thôi học", "Tạm dừng học"]
-VALID_GENDERS = ["Nam", "Nữ", "Khác"]
+VALID_GENDERS = ["Nam", "Nữ", "Khác"]  # This remains static
+
+# Function to get current valid options
+def get_current_valid_options():
+    return {
+        'faculty': get_valid_options('faculty'),
+        'status': get_valid_options('status'),
+        'program': get_valid_options('program')
+    }
 
 # Validation functions
 def is_valid_email(email):
@@ -68,7 +105,8 @@ class StudentApp:
             ("Thêm Sinh Viên", self.show_add_student),
             ("Xóa Sinh Viên", self.show_delete_student),
             ("Cập Nhật Sinh Viên", self.show_update_student),
-            ("Tìm Kiếm Sinh Viên", self.show_search_student)
+            ("Tìm Kiếm Sinh Viên", self.show_search_student),
+            ("Quản lý Danh mục", self.show_manage_options)  # Add this line
         ]
         
         for i, (text, command) in enumerate(buttons):
@@ -175,23 +213,25 @@ class StudentApp:
 
         self.entries = {}
         
+        current_options = get_current_valid_options()
+        
         # Left column fields
         left_fields = [
             ("MSSV", None),
             ("Họ Tên", None),
             ("Ngày sinh", "dd/mm/yyyy"),
             ("Giới tính", VALID_GENDERS),
-            ("Khoa", VALID_FACULTIES),
+            ("Khoa", current_options['faculty']),
             ("Khóa", None)
         ]
 
         # Right column fields
         right_fields = [
-            ("Chương trình", None),
+            ("Chương trình", current_options['program']),
             ("Địa chỉ", None),
             ("Email", None),
             ("Số điện thoại", None),
-            ("Tình trạng", VALID_STATUSES)
+            ("Tình trạng", current_options['status'])
         ]
 
         # Create left column
@@ -265,22 +305,24 @@ class StudentApp:
 
         self.update_entries = {}
         
+        current_options = get_current_valid_options()
+        
         # Left column fields
         left_fields = [
             ("Họ Tên", None),
             ("Ngày sinh", "dd/mm/yyyy"),
             ("Giới tính", VALID_GENDERS),
-            ("Khoa", VALID_FACULTIES),
+            ("Khoa", current_options['faculty']),
             ("Khóa", None)
         ]
 
         # Right column fields
         right_fields = [
-            ("Chương trình", None),
+            ("Chương trình", current_options['program']),
             ("Địa chỉ", None),
             ("Email", None),
             ("Số điện thoại", None),
-            ("Tình trạng", VALID_STATUSES)
+            ("Tình trạng", current_options['status'])
         ]
 
         # Create left column
@@ -331,10 +373,10 @@ class StudentApp:
         if not is_valid_date(data["Ngày sinh"]):
             messagebox.showerror("Lỗi", "Ngày sinh không hợp lệ! Định dạng: dd/mm/yyyy")
             return
-        if data["Khoa"] not in VALID_FACULTIES:
+        if data["Khoa"] not in get_valid_options('faculty'):
             messagebox.showerror("Lỗi", "Khoa không hợp lệ!")
             return
-        if data["Tình trạng"] not in VALID_STATUSES:
+        if data["Tình trạng"] not in get_valid_options('status'):
             messagebox.showerror("Lỗi", "Tình trạng không hợp lệ!")
             return
         if not is_valid_email(data["Email"]):
@@ -374,10 +416,12 @@ class StudentApp:
             return "MSSV và Họ Tên không được để trống!"
         if not is_valid_date(data["Ngày sinh"]):
             return "Ngày sinh không hợp lệ! Định dạng: dd/mm/yyyy"
-        if data["Khoa"] not in VALID_FACULTIES:
+        if data["Khoa"] not in get_valid_options('faculty'):
             return "Khoa không hợp lệ!"
-        if data["Tình trạng"] not in VALID_STATUSES:
+        if data["Tình trạng"] not in get_valid_options('status'):
             return "Tình trạng không hợp lệ!"
+        if data["Chương trình"] and data["Chương trình"] not in get_valid_options('program'):
+            return "Chương trình không hợp lệ!"
         if not is_valid_email(data["Email"]):
             return "Email không hợp lệ!"
         if not is_valid_phone(data["Số điện thoại"]):
@@ -430,7 +474,98 @@ class StudentApp:
             messagebox.showinfo("Thành công", "Xóa sinh viên thành công!")
             self.refresh_tree()
             self.mssv_delete_entry.delete(0, tk.END)
-    
+
+    def show_manage_options(self):
+        self.clear_frame()
+        self.current_frame = tk.LabelFrame(self.main_container, text="Quản lý Danh mục")
+        self.current_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        categories = {
+            'faculty': 'Khoa',
+            'status': 'Tình trạng',
+            'program': 'Chương trình'
+        }
+        
+        for i, (category, title) in enumerate(categories.items()):
+            frame = tk.LabelFrame(self.current_frame, text=title)
+            frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            # Create listbox to show current values
+            listbox = tk.Listbox(frame, height=5)
+            listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            # Load current values
+            for value in get_valid_options(category):
+                listbox.insert(tk.END, value)
+            
+            btn_frame = tk.Frame(frame)
+            btn_frame.pack(side=tk.LEFT, padx=5)
+            
+            entry = tk.Entry(btn_frame)
+            entry.pack(pady=2)
+            
+            tk.Button(btn_frame, text="Thêm", 
+                     command=lambda c=category, e=entry, lb=listbox: self.add_option(c, e, lb)
+                    ).pack(fill=tk.X, pady=2)
+            tk.Button(btn_frame, text="Xóa", 
+                     command=lambda c=category, lb=listbox: self.delete_option(c, lb)
+                    ).pack(fill=tk.X, pady=2)
+
+    def add_option(self, category, entry, listbox):
+        value = entry.get().strip()
+        if not value:
+            messagebox.showerror("Lỗi", "Vui lòng nhập giá trị!")
+            return
+        
+        try:
+            cursor.execute("INSERT INTO settings (category, value) VALUES (?, ?)", 
+                          (category, value))
+            conn.commit()
+            listbox.insert(tk.END, value)
+            entry.delete(0, tk.END)
+            
+            # Update the comboboxes in add/update forms
+            self._update_comboboxes(category)
+            
+        except sqlite3.IntegrityError:
+            messagebox.showerror("Lỗi", "Giá trị này đã tồn tại!")
+
+    def delete_option(self, category, listbox):
+        selection = listbox.curselection()
+        if not selection:
+            messagebox.showerror("Lỗi", "Vui lòng chọn giá trị cần xóa!")
+            return
+        
+        value = listbox.get(selection[0])
+        if messagebox.askyesno("Xác nhận", f"Bạn có chắc muốn xóa '{value}'?"):
+            cursor.execute("DELETE FROM settings WHERE category = ? AND value = ?", 
+                          (category, value))
+            conn.commit()
+            listbox.delete(selection[0])
+            
+            # Update the comboboxes in add/update forms
+            self._update_comboboxes(category)
+
+    def _update_comboboxes(self, category):
+        """Update comboboxes with new values after adding/deleting options"""
+        new_values = get_valid_options(category)
+        
+        # Update add form comboboxes if they exist
+        if hasattr(self, 'entries'):
+            category_map = {
+                'faculty': 'Khoa',
+                'status': 'Tình trạng',
+                'program': 'Chương trình'
+            }
+            field_name = category_map.get(category)
+            if field_name and field_name in self.entries:
+                self.entries[field_name]['values'] = new_values
+        
+        # Update update form comboboxes if they exist
+        if hasattr(self, 'update_entries'):
+            field_name = category_map.get(category)
+            if field_name and field_name in self.update_entries:
+                self.update_entries[field_name]['values'] = new_values
 
 def main():
     try:
