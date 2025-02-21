@@ -178,11 +178,133 @@ class StudentApp:
         search_frame = tk.Frame(self.current_frame)
         search_frame.pack(fill=tk.X, padx=5, pady=5)
         
+        # Add search by MSSV
         tk.Label(search_frame, text="MSSV:").pack(side=tk.LEFT, padx=5)
         self.search_entry = tk.Entry(search_frame)
         self.search_entry.pack(side=tk.LEFT, padx=5)
         
-        tk.Button(search_frame, text="Tìm Kiếm", command=self.search_student).pack(side=tk.LEFT, padx=5)
+        tk.Button(search_frame, text="Tìm theo MSSV", 
+                 command=self.search_student).pack(side=tk.LEFT, padx=5)
+        
+        # Add advanced search frame
+        advanced_frame = tk.Frame(self.current_frame)
+        advanced_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Add faculty search
+        tk.Label(advanced_frame, text="Khoa:").pack(side=tk.LEFT, padx=5)
+        self.faculty_search = ttk.Combobox(advanced_frame, values=get_valid_options('faculty'))
+        self.faculty_search.pack(side=tk.LEFT, padx=5)
+        
+        # Add name search
+        tk.Label(advanced_frame, text="Tên SV:").pack(side=tk.LEFT, padx=5)
+        self.name_search = tk.Entry(advanced_frame)
+        self.name_search.pack(side=tk.LEFT, padx=5)
+        
+        tk.Button(advanced_frame, text="Tìm kiếm nâng cao", 
+                 command=self.advanced_search).pack(side=tk.LEFT, padx=5)
+        
+        # Add treeview to display results
+        self.create_results_tree()
+
+    def create_results_tree(self):
+        # Create treeview frame
+        tree_frame = tk.Frame(self.current_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Create treeview with scrollbar
+        self.tree = ttk.Treeview(tree_frame, columns=(
+            "mssv", "name", "dob", "gender", "faculty", "course",
+            "program", "status"
+        ), show='headings')
+        
+        # Add scrollbars
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        
+        # Grid layout
+        self.tree.grid(column=0, row=0, sticky='nsew')
+        vsb.grid(column=1, row=0, sticky='ns')
+        hsb.grid(column=0, row=1, sticky='ew')
+        tree_frame.grid_columnconfigure(0, weight=1)
+        tree_frame.grid_rowconfigure(0, weight=1)
+        
+        # Configure columns
+        columns = {
+            "mssv": "MSSV",
+            "name": "Họ Tên",
+            "dob": "Ngày sinh",
+            "gender": "Giới tính",
+            "faculty": "Khoa",
+            "course": "Khóa",
+            "program": "Chương trình",
+            "status": "Tình trạng"
+        }
+        
+        for col, heading in columns.items():
+            self.tree.heading(col, text=heading)
+            self.tree.column(col, width=100)
+        
+        # Bind double-click event to show full student info
+        self.tree.bind('<Double-1>', self.show_selected_student)
+
+    def advanced_search(self):
+        faculty = self.faculty_search.get().strip()
+        name = self.name_search.get().strip()
+        
+        # Clear existing items
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        if not faculty and not name:
+            messagebox.showwarning("Cảnh báo", "Vui lòng nhập ít nhất một điều kiện tìm kiếm!")
+            return
+        
+        # Build query based on search conditions
+        query = "SELECT * FROM students WHERE 1=1"
+        params = []
+        
+        if faculty:
+            query += " AND faculty = ?"
+            params.append(faculty)
+        
+        if name:
+            query += " AND name LIKE ?"
+            params.append(f"%{name}%")
+        
+        cursor.execute(query, params)
+        results = cursor.fetchall()
+        
+        if not results:
+            messagebox.showinfo("Thông báo", "Không tìm thấy kết quả nào!")
+            return
+        
+        # Display results in treeview
+        for student in results:
+            self.tree.insert('', 'end', values=(
+                student[1],  # mssv
+                student[2],  # name
+                student[3],  # dob
+                student[4],  # gender
+                student[5],  # faculty
+                student[6],  # course
+                student[7],  # program
+                student[11]  # status
+            ))
+
+    def show_selected_student(self, event):
+        selected_item = self.tree.selection()
+        if not selected_item:
+            return
+        
+        # Get MSSV from selected item
+        mssv = self.tree.item(selected_item[0])['values'][0]
+        
+        # Fetch and display full student info
+        cursor.execute("SELECT * FROM students WHERE mssv = ?", (mssv,))
+        student = cursor.fetchone()
+        if student:
+            self.display_student_info(student)
 
     def search_student(self):
         mssv = self.search_entry.get().strip()
