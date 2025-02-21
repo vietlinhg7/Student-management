@@ -3,6 +3,10 @@ import re
 import tkinter as tk
 from tkinter import messagebox, ttk
 from datetime import datetime
+import csv
+import pandas as pd
+from tkinter import filedialog
+import openpyxl
 
 # Database connection
 conn = sqlite3.connect("students.db")
@@ -106,7 +110,8 @@ class StudentApp:
             ("Xóa Sinh Viên", self.show_delete_student),
             ("Cập Nhật Sinh Viên", self.show_update_student),
             ("Tìm Kiếm Sinh Viên", self.show_search_student),
-            ("Quản lý Danh mục", self.show_manage_options)  # Add this line
+            ("Quản lý Danh mục", self.show_manage_options),
+            ("Nhập/Xuất Dữ liệu", self.show_import_export)  # Add this line
         ]
         
         for i, (text, command) in enumerate(buttons):
@@ -688,6 +693,133 @@ class StudentApp:
             field_name = category_map.get(category)
             if field_name and field_name in self.update_entries:
                 self.update_entries[field_name]['values'] = new_values
+
+    def show_import_export(self):
+        self.clear_frame()
+        self.current_frame = tk.LabelFrame(self.main_container, text="Nhập/Xuất Dữ Liệu")
+        self.current_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Import section
+        import_frame = tk.LabelFrame(self.current_frame, text="Nhập dữ liệu")
+        import_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        tk.Button(import_frame, text="Nhập từ CSV", 
+                 command=lambda: self.import_data('csv')).pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Button(import_frame, text="Nhập từ Excel", 
+                 command=lambda: self.import_data('excel')).pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Export section
+        export_frame = tk.LabelFrame(self.current_frame, text="Xuất dữ liệu")
+        export_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        tk.Button(export_frame, text="Xuất ra CSV", 
+                 command=lambda: self.export_data('csv')).pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Button(export_frame, text="Xuất ra Excel", 
+                 command=lambda: self.export_data('excel')).pack(side=tk.LEFT, padx=5, pady=5)
+
+    def import_data(self, format_type):
+        filetypes = [('CSV files', '*.csv')] if format_type == 'csv' else [('Excel files', '*.xlsx')]
+        filename = filedialog.askopenfilename(filetypes=filetypes)
+        if not filename:
+            return
+            
+        try:
+            if format_type == 'csv':
+                df = pd.read_csv(filename)
+            else:
+                df = pd.read_excel(filename)
+                
+            # Validate column names
+            required_columns = [
+                'mssv', 'name', 'dob', 'gender', 'faculty', 'course',
+                'program', 'address', 'email', 'phone', 'status'
+            ]
+            
+            if not all(col in df.columns for col in required_columns):
+                messagebox.showerror("Lỗi", "File không đúng định dạng! Thiếu cột bắt buộc.")
+                return
+                
+            # Validate and import data
+            success_count = 0
+            error_count = 0
+            
+            for _, row in df.iterrows():
+                data = {
+                    "MSSV": str(row['mssv']),
+                    "Họ Tên": str(row['name']),
+                    "Ngày sinh": str(row['dob']),
+                    "Giới tính": str(row['gender']),
+                    "Khoa": str(row['faculty']),
+                    "Khóa": str(row['course']),
+                    "Chương trình": str(row['program']),
+                    "Địa chỉ": str(row['address']),
+                    "Email": str(row['email']),
+                    "Số điện thoại": str(row['phone']),
+                    "Tình trạng": str(row['status'])
+                }
+                
+                error = self.validate_input(data)
+                if error:
+                    error_count += 1
+                    continue
+                    
+                try:
+                    cursor.execute('''
+                        INSERT INTO students (mssv, name, dob, gender, faculty, course,
+                                            program, address, email, phone, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        data["MSSV"], data["Họ Tên"], data["Ngày sinh"], data["Giới tính"],
+                        data["Khoa"], data["Khóa"], data["Chương trình"], data["Địa chỉ"],
+                        data["Email"], data["Số điện thoại"], data["Tình trạng"]
+                    ))
+                    success_count += 1
+                except sqlite3.IntegrityError:
+                    error_count += 1
+                    
+            conn.commit()
+            messagebox.showinfo("Thành công", 
+                              f"Đã nhập {success_count} sinh viên!\nLỗi: {error_count} sinh viên")
+            self.refresh_tree()
+            
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Lỗi khi đọc file: {str(e)}")
+
+    def export_data(self, format_type):
+        filetypes = [('CSV files', '*.csv')] if format_type == 'csv' else [('Excel files', '*.xlsx')]
+        filename = filedialog.asksaveasfilename(filetypes=filetypes, 
+                                              defaultextension=filetypes[0][1])
+        if not filename:
+            return
+            
+        try:
+            cursor.execute('''
+                SELECT mssv, name, dob, gender, faculty, course,
+                       program, address, email, phone, status
+                FROM students
+            ''')
+            rows = cursor.fetchall()
+            
+            if not rows:
+                messagebox.showinfo("Thông báo", "Không có dữ liệu để xuất!")
+                return
+                
+            # Convert to DataFrame
+            df = pd.DataFrame(rows, columns=[
+                'mssv', 'name', 'dob', 'gender', 'faculty', 'course',
+                'program', 'address', 'email', 'phone', 'status'
+            ])
+            
+            # Export based on format
+            if format_type == 'csv':
+                df.to_csv(filename, index=False, encoding='utf-8-sig')
+            else:
+                df.to_excel(filename, index=False)
+                
+            messagebox.showinfo("Thành công", "Xuất dữ liệu thành công!")
+            
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Lỗi khi xuất file: {str(e)}")
 
 def main():
     try:
