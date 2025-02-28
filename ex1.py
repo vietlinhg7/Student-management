@@ -133,9 +133,13 @@ def get_current_valid_options():
     }
 
 # Validation functions
-def get_config(key, default=None):
+def get_config(key, default=None, db_connection=None):
+    conn = db_connection or sqlite3.connect("students.db")
+    cursor = conn.cursor()
     cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
     result = cursor.fetchone()
+    if not db_connection:
+        conn.close()
     return result[0] if result else default
 
 def is_valid_email(email):
@@ -171,17 +175,19 @@ def log_status_change(mssv, old_status, new_status):
     # send_email_notification(mssv, old_status, new_status)
     # send_sms_notification(mssv, old_status, new_status)
 
-def can_delete_student(mssv):
-    if get_config('enable_rules', 'true').lower() != 'true':
-        return True
-        
-    deletion_window = int(get_config('deletion_window_minutes', '30'))
+def can_delete_student(mssv, db_connection=None):
+    conn = db_connection or sqlite3.connect("students.db")
+    cursor = conn.cursor()
+    deletion_window = int(get_config('deletion_window_minutes', '30', conn))
     cursor.execute("""
         SELECT created_at FROM students 
         WHERE mssv = ? AND 
         datetime(created_at) >= datetime('now', ?) 
     """, (mssv, f'-{deletion_window} minutes'))
-    return cursor.fetchone() is not None
+    result = cursor.fetchone() is not None
+    if not db_connection:
+        conn.close()
+    return result
 
 class StudentApp:
     def __init__(self, root):
