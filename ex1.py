@@ -11,7 +11,7 @@ import logging
 import os
 
 # Add after imports
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 BUILD_DATE = "21/02/2025"  # Update this when building new versions
 
 # Create logs directory if it doesn't exist
@@ -60,6 +60,15 @@ cursor.execute('''
     )
 ''')
 
+# Add after database connection
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS config (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        description TEXT
+    )
+''')
+
 # Initialize default values if table is empty
 def init_default_settings():
     default_values = {
@@ -78,6 +87,35 @@ def init_default_settings():
 
 init_default_settings()
 
+# Add default config values if empty
+def init_default_config():
+    default_config = {
+        'allowed_email_domains': '@student.university.edu.vn',
+        'phone_pattern': r'^(\+84|0)[3|5|7|8|9][0-9]{8}$',
+        'deletion_window_minutes': '30',
+        'status_transitions': '''
+            {
+                "Đang học": ["Bảo lưu", "Tốt nghiệp", "Đình chỉ"],
+                "Bảo lưu": ["Đang học", "Đình chỉ"],
+                "Đình chỉ": [],
+                "Tốt nghiệp": []
+            }
+        ''',
+        'enable_rules': 'true',
+        'school_name': 'Trường Đại học ABC'
+    }
+    
+    cursor.execute("SELECT COUNT(*) FROM config")
+    if cursor.fetchone()[0] == 0:
+        for key, value in default_config.items():
+            cursor.execute(
+                "INSERT INTO config (key, value) VALUES (?, ?)", 
+                (key, value)
+            )
+        conn.commit()
+
+init_default_config()
+
 # Replace the constants with functions to get values from database
 def get_valid_options(category):
     cursor.execute("SELECT value FROM settings WHERE category = ?", (category,))
@@ -95,11 +133,29 @@ def get_current_valid_options():
     }
 
 # Validation functions
+def get_config(key, default=None):
+    cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
+    result = cursor.fetchone()
+    return result[0] if result else default
+
 def is_valid_email(email):
-    return re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email) is not None
+    allowed_domains = get_config('allowed_email_domains', '@student.university.edu.vn')
+    if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email):
+        return False
+    return any(email.endswith(domain.strip()) for domain in allowed_domains.split(','))
 
 def is_valid_phone(phone):
-    return re.match(r"^\d{10,11}$", phone) is not None
+    pattern = get_config('phone_pattern', r'^(\+84|0)[3|5|7|8|9][0-9]{8}$')
+    return re.match(pattern, phone) is not None
+
+def is_valid_status_transition(old_status, new_status):
+    if get_config('enable_rules', 'true').lower() != 'true':
+        return True
+        
+    import json
+    transitions = json.loads(get_config('status_transitions', '{}'))
+    allowed = transitions.get(old_status, [])
+    return new_status in allowed
 
 def is_valid_date(date_str):
     try:
@@ -108,11 +164,31 @@ def is_valid_date(date_str):
     except ValueError:
         return False
 
+def log_status_change(mssv, old_status, new_status):
+    logger.info(f"Status change for {mssv}: {old_status} -> {new_status}")
+    # Here you would add code to send notifications
+    # For example:
+    # send_email_notification(mssv, old_status, new_status)
+    # send_sms_notification(mssv, old_status, new_status)
+
+def can_delete_student(mssv):
+    if get_config('enable_rules', 'true').lower() != 'true':
+        return True
+        
+    deletion_window = int(get_config('deletion_window_minutes', '30'))
+    cursor.execute("""
+        SELECT created_at FROM students 
+        WHERE mssv = ? AND 
+        datetime(created_at) >= datetime('now', ?) 
+    """, (mssv, f'-{deletion_window} minutes'))
+    return cursor.fetchone() is not None
+
 class StudentApp:
     def __init__(self, root):
         logger.info(f"Starting Student Management Application v{VERSION} (Build: {BUILD_DATE})")
         self.root = root
-        self.root.title(f"Quản Lý Sinh Viên - v{VERSION}")
+        school_name = get_config('school_name', 'Trường Đại học ABC')
+        self.root.title(f"{school_name} - Quản Lý Sinh Viên - v{VERSION}")
         self.root.geometry("1000x600")
         
         # Create main container
@@ -137,7 +213,8 @@ class StudentApp:
             ("Cập Nhật Sinh Viên", self.show_update_student),
             ("Tìm Kiếm Sinh Viên", self.show_search_student),
             ("Quản lý Danh mục", self.show_manage_options),
-            ("Nhập/Xuất Dữ liệu", self.show_import_export)
+            ("Nhập/Xuất Dữ liệu", self.show_import_export),
+            ("Cấu hình hệ thống", self.show_config_management)
         ]
         
         for i, (text, command) in enumerate(buttons):
@@ -881,6 +958,57 @@ Build Date: {BUILD_DATE}
     """
         messagebox.showinfo("Thông tin phiên bản", version_text)
 
+    def show_config_management(self):
+        self.clear_frame()
+        self.current_frame = tk.LabelFrame(self.main_container, text="Cấu hình hệ thống")
+        self.current_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Create scrollable frame
+        canvas = tk.Canvas(self.current_frame)
+        scrollbar = ttk.Scrollbar(self.current_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Add config entries
+        cursor.execute("SELECT key, value FROM config")
+        self.config_entries = {}
+        
+        for i, (key, value) in enumerate(cursor.fetchall()):
+            frame = ttk.Frame(scrollable_frame)
+            frame.pack(fill=tk.X, pady=5)
+            
+            ttk.Label(frame, text=f"{key}:").pack(side=tk.LEFT, padx=5)
+            entry = ttk.Entry(frame, width=50)
+            entry.insert(0, value)
+            entry.pack(side=tk.LEFT, padx=5)
+            self.config_entries[key] = entry
+        
+        # Save button
+        ttk.Button(scrollable_frame, text="Lưu cấu hình", 
+                   command=self.save_config).pack(pady=10)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+    def save_config(self):
+        try:
+            for key, entry in self.config_entries.items():
+                cursor.execute(
+                    "UPDATE config SET value = ? WHERE key = ?",
+                    (entry.get(), key)
+                )
+            conn.commit()
+            messagebox.showinfo("Thành công", "Đã lưu cấu hình!")
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Lỗi khi lưu cấu hình: {str(e)}")
+
 def main():
     try:
         root = tk.Tk()
@@ -899,5 +1027,5 @@ def main():
     finally:
         conn.close()
 
-if __name__ == "__main__":
+if __name__:
     main()
