@@ -7,187 +7,144 @@ import csv
 import pandas as pd
 from tkinter import filedialog
 import openpyxl
-import logging
-import os
+from fpdf import FPDF  # For PDF generation
+import markdown  # For Markdown generation
 
-# Add after imports
-VERSION = "3.0.0"
-BUILD_DATE = "21/02/2025"  # Update this when building new versions
-
-# Create logs directory if it doesn't exist
-if not os.path.exists('logs'):
-    os.makedirs('logs')
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] - %(message)s',
-    handlers=[
-        logging.FileHandler(f'logs/student_manager_{datetime.now().strftime("%Y%m%d")}.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Database connection
-conn = sqlite3.connect("students.db")
-cursor = conn.cursor()
-
-# Create students table
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS students (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        mssv TEXT UNIQUE NOT NULL,
-        name TEXT NOT NULL,
-        dob TEXT,
-        gender TEXT,
-        faculty TEXT,
-        course TEXT,
-        program TEXT,
-        address TEXT,
-        email TEXT,
-        phone TEXT,
-        status TEXT
-    )
-''')
-
-# Create settings table for dynamic options
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS settings (
-        category TEXT,
-        value TEXT,
-        UNIQUE(category, value)
-    )
-''')
-
-# Add after database connection
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS config (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        description TEXT
-    )
-''')
-
-# Initialize default values if table is empty
-def init_default_settings():
-    default_values = {
-        'faculty': ["Khoa Luật", "Khoa Tiếng Anh thương mại", "Khoa Tiếng Nhật", "Khoa Tiếng Pháp"],
-        'status': ["Đang học", "Đã tốt nghiệp", "Đã thôi học", "Tạm dừng học"],
-        'program': ["Cử nhân", "Thạc sĩ", "Tiến sĩ"]
-    }
-    
-    cursor.execute("SELECT COUNT(*) FROM settings")
-    if cursor.fetchone()[0] == 0:
-        for category, values in default_values.items():
-            for value in values:
-                cursor.execute("INSERT INTO settings (category, value) VALUES (?, ?)", 
-                             (category, value))
-        conn.commit()
-
-init_default_settings()
-
-# Add default config values if empty
-def init_default_config():
-    default_config = {
-        'allowed_email_domains': '@student.university.edu.vn',
-        'phone_pattern': r'^(\+84|0)[3|5|7|8|9][0-9]{8}$',
-        'deletion_window_minutes': '30',
-        'status_transitions': '''
-            {
-                "Đang học": ["Bảo lưu", "Tốt nghiệp", "Đình chỉ"],
-                "Bảo lưu": ["Đang học", "Đình chỉ"],
-                "Đình chỉ": [],
-                "Tốt nghiệp": []
-            }
-        ''',
-        'enable_rules': 'true',
-        'school_name': 'Trường Đại học ABC'
-    }
-    
-    cursor.execute("SELECT COUNT(*) FROM config")
-    if cursor.fetchone()[0] == 0:
-        for key, value in default_config.items():
-            cursor.execute(
-                "INSERT INTO config (key, value) VALUES (?, ?)", 
-                (key, value)
-            )
-        conn.commit()
-
-init_default_config()
-
-# Replace the constants with functions to get values from database
-def get_valid_options(category):
-    cursor.execute("SELECT value FROM settings WHERE category = ?", (category,))
-    return [row[0] for row in cursor.fetchall()]
+from app_logging import logger
+from database_operations import get_config, can_delete_student, add_student_to_db, fetch_student_by_mssv, update_student_in_db, delete_student_from_db, get_valid_options, delete_category, export_student_status, perform_advanced_search
+from database_initialization import conn, cursor
+from validation import validate_student_data
 
 # Constants
-VALID_GENDERS = ["Nam", "Nữ", "Khác"]  # This remains static
+VERSION = "4.0.0"
+BUILD_DATE = "21/02/2025"  # Update this when building new versions
+VALID_GENDERS = ["Nam", "Nữ", "Khác"]  # Static gender options
 
-# Function to get current valid options
+def create_treeview(parent, columns, headings):
+    """Create a TreeView widget with scrollbars."""
+    tree = ttk.Treeview(parent, columns=columns, show='headings')
+    vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+    hsb = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+    tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+    tree.grid(column=0, row=0, sticky='nsew')
+    vsb.grid(column=1, row=0, sticky='ns')
+    hsb.grid(column=0, row=1, sticky='ew')
+    parent.grid_columnconfigure(0, weight=1)
+    parent.grid_rowconfigure(0, weight=1)
+    for col, heading in headings.items():
+        tree.heading(col, text=heading)
+        tree.column(col, width=100)
+    return tree
+
+def log_status_change(mssv, old_status, new_status):
+    """Log status changes for a student."""
+    logger.info(f"Status change for {mssv}: {old_status} -> {new_status}")
+    # Placeholder for notification logic (e.g., email, SMS)
+
+def send_notification(mssv, message):
+    """Send notifications to a student based on their registered preferences."""
+    cursor.execute("SELECT email, phone, notification_preferences FROM students WHERE mssv = ?", (mssv,))
+    student = cursor.fetchone()
+    if not student:
+        logger.warning(f"Notification failed - Student not found: {mssv}")
+        return
+
+    email, phone, preferences = student
+    preferences = preferences.split(",") if preferences else []
+
+    if "email" in preferences and email:
+        logger.info(f"Sending email to {email}: {message}")
+        # Placeholder for email sending logic
+
+    if "sms" in preferences and phone:
+        logger.info(f"Sending SMS to {phone}: {message}")
+        # Placeholder for SMS sending logic
+
+    if "zalo" in preferences:
+        logger.info(f"Sending Zalo message to {mssv}: {message}")
+        # Placeholder for Zalo API integration
+
 def get_current_valid_options():
+    """Retrieve all current valid options for dynamic fields."""
     return {
         'faculty': get_valid_options('faculty'),
         'status': get_valid_options('status'),
         'program': get_valid_options('program')
     }
 
-# Validation functions
-def get_config(key, default=None, db_connection=None):
-    conn = db_connection or sqlite3.connect("students.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM config WHERE key = ?", (key,))
-    result = cursor.fetchone()
-    if not db_connection:
-        conn.close()
-    return result[0] if result else default
+def display_student_info_frame(parent, student):
+    """Display student information in a new frame."""
+    # Clear previous student info if exists
+    for widget in parent.winfo_children():
+        widget.destroy()
 
-def is_valid_email(email):
-    allowed_domains = get_config('allowed_email_domains', '@student.university.edu.vn')
-    if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email):
-        return False
-    return any(email.endswith(domain.strip()) for domain in allowed_domains.split(','))
+    # Create new frame for student info
+    student_info_frame = tk.LabelFrame(parent, text="Thông tin sinh viên")
+    student_info_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-def is_valid_phone(phone):
-    pattern = get_config('phone_pattern', r'^(\+84|0)[3|5|7|8|9][0-9]{8}$')
-    return re.match(pattern, phone) is not None
+    # Create two columns for information display
+    left_frame = tk.Frame(student_info_frame)
+    right_frame = tk.Frame(student_info_frame)
+    left_frame.pack(side=tk.LEFT, padx=20, pady=10, fill=tk.BOTH, expand=True)
+    right_frame.pack(side=tk.LEFT, padx=20, pady=10, fill=tk.BOTH, expand=True)
 
-def is_valid_status_transition(old_status, new_status):
-    if get_config('enable_rules', 'true').lower() != 'true':
-        return True
-        
-    import json
-    transitions = json.loads(get_config('status_transitions', '{}'))
-    allowed = transitions.get(old_status, [])
-    return new_status in allowed
+    # Define fields and their values
+    left_fields = [
+        ("MSSV", student[1]),
+        ("Họ Tên", student[2]),
+        ("Ngày sinh", student[3]),
+        ("Giới tính", student[4]),
+        ("Khoa", student[5]),
+        ("Khóa", student[6])
+    ]
 
-def is_valid_date(date_str):
-    try:
-        datetime.strptime(date_str, '%d/%m/%Y')
-        return True
-    except ValueError:
-        return False
+    right_fields = [
+        ("Chương trình", student[7]),
+        ("Địa chỉ", student[8]),
+        ("Email", student[9]),
+        ("Số điện thoại", student[10]),
+        ("Tình trạng", student[11])
+    ]
 
-def log_status_change(mssv, old_status, new_status):
-    logger.info(f"Status change for {mssv}: {old_status} -> {new_status}")
-    # Here you would add code to send notifications
-    # For example:
-    # send_email_notification(mssv, old_status, new_status)
-    # send_sms_notification(mssv, old_status, new_status)
+    # Display left column information
+    for i, (label, value) in enumerate(left_fields):
+        tk.Label(left_frame, text=f"{label}:", anchor="e", font=("Arial", 10, "bold")).grid(
+            row=i, column=0, sticky="e", padx=5, pady=5)
+        tk.Label(left_frame, text=value, anchor="w").grid(
+            row=i, column=1, sticky="w", padx=5, pady=5)
 
-def can_delete_student(mssv, db_connection=None):
-    conn = db_connection or sqlite3.connect("students.db")
-    cursor = conn.cursor()
-    deletion_window = int(get_config('deletion_window_minutes', '30', conn))
-    cursor.execute("""
-        SELECT created_at FROM students 
-        WHERE mssv = ? AND 
-        datetime(created_at) >= datetime('now', ?) 
-    """, (mssv, f'-{deletion_window} minutes'))
-    result = cursor.fetchone() is not None
-    if not db_connection:
-        conn.close()
-    return result
+    # Display right column information
+    for i, (label, value) in enumerate(right_fields):
+        tk.Label(right_frame, text=f"{label}:", anchor="e", font=("Arial", 10, "bold")).grid(
+            row=i, column=0, sticky="e", padx=5, pady=5)
+        tk.Label(right_frame, text=value, anchor="w").grid(
+            row=i, column=1, sticky="w", padx=5, pady=5)
+
+    return student_info_frame
+
+
+def refresh_tree(tree, cursor):
+    """Refresh the TreeView with the latest data from the database."""
+    # Clear existing items in the TreeView
+    for item in tree.get_children():
+        tree.delete(item)
+
+    # Fetch all students from the database
+    cursor.execute('''
+        SELECT mssv, name, dob, gender, faculty, course, program, status
+        FROM students
+    ''')
+    rows = cursor.fetchall()
+
+    # Insert rows into the TreeView
+    for row in rows:
+        tree.insert('', 'end', values=row)
+
+    logger.info("TreeView refreshed successfully.")
+
+
+
+
 
 class StudentApp:
     def __init__(self, root):
@@ -232,53 +189,6 @@ class StudentApp:
                               command=self.show_version_info,
                               width=8, relief=tk.FLAT)
         version_btn.pack(side=tk.RIGHT, padx=5)
-
-    def display_student_info(self, student):
-        # Clear previous student info if exists
-        if self.student_info_frame:
-            self.student_info_frame.destroy()
-
-        # Create new frame for student info
-        self.student_info_frame = tk.LabelFrame(self.main_container, text="Thông tin sinh viên")
-        self.student_info_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-        # Create two columns for information display
-        left_frame = tk.Frame(self.student_info_frame)
-        right_frame = tk.Frame(self.student_info_frame)
-        left_frame.pack(side=tk.LEFT, padx=20, pady=10, fill=tk.BOTH, expand=True)
-        right_frame.pack(side=tk.LEFT, padx=20, pady=10, fill=tk.BOTH, expand=True)
-
-        # Define fields and their values
-        left_fields = [
-            ("MSSV", student[1]),
-            ("Họ Tên", student[2]),
-            ("Ngày sinh", student[3]),
-            ("Giới tính", student[4]),
-            ("Khoa", student[5]),
-            ("Khóa", student[6])
-        ]
-
-        right_fields = [
-            ("Chương trình", student[7]),
-            ("Địa chỉ", student[8]),
-            ("Email", student[9]),
-            ("Số điện thoại", student[10]),
-            ("Tình trạng", student[11])
-        ]
-
-        # Display left column information
-        for i, (label, value) in enumerate(left_fields):
-            tk.Label(left_frame, text=f"{label}:", anchor="e", font=("Arial", 10, "bold")).grid(
-                row=i, column=0, sticky="e", padx=5, pady=5)
-            tk.Label(left_frame, text=value, anchor="w").grid(
-                row=i, column=1, sticky="w", padx=5, pady=5)
-
-        # Display right column information
-        for i, (label, value) in enumerate(right_fields):
-            tk.Label(right_frame, text=f"{label}:", anchor="e", font=("Arial", 10, "bold")).grid(
-                row=i, column=0, sticky="e", padx=5, pady=5)
-            tk.Label(right_frame, text=value, anchor="w").grid(
-                row=i, column=1, sticky="w", padx=5, pady=5)
 
     def clear_frame(self):
         # Destroy all widgets except the button frame
@@ -325,31 +235,14 @@ class StudentApp:
         
         # Add treeview to display results
         self.create_results_tree()
+        tk.Button(self.current_frame, text="Xuất Giấy Xác Nhận", command=self.show_export_confirmation).pack(pady=10)
 
     def create_results_tree(self):
-        # Create treeview frame
+        """Create a TreeView widget to display search results."""
         tree_frame = tk.Frame(self.current_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Create treeview with scrollbar
-        self.tree = ttk.Treeview(tree_frame, columns=(
-            "mssv", "name", "dob", "gender", "faculty", "course",
-            "program", "status"
-        ), show='headings')
-        
-        # Add scrollbars
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        
-        # Grid layout
-        self.tree.grid(column=0, row=0, sticky='nsew')
-        vsb.grid(column=1, row=0, sticky='ns')
-        hsb.grid(column=0, row=1, sticky='ew')
-        tree_frame.grid_columnconfigure(0, weight=1)
-        tree_frame.grid_rowconfigure(0, weight=1)
-        
-        # Configure columns
+        # Define columns and headings
         columns = {
             "mssv": "MSSV",
             "name": "Họ Tên",
@@ -361,44 +254,44 @@ class StudentApp:
             "status": "Tình trạng"
         }
         
-        for col, heading in columns.items():
-            self.tree.heading(col, text=heading)
-            self.tree.column(col, width=100)
-        
-        # Bind double-click event to show full student info
+        # Convert columns.keys() to a list
+        self.tree = create_treeview(tree_frame, list(columns.keys()), columns)
         self.tree.bind('<Double-1>', self.show_selected_student)
 
+    def show_selected_student(self, event):
+        selected_item = self.tree.selection()
+        if not selected_item:
+            return
+        
+        # Get MSSV from selected item
+        mssv = self.tree.item(selected_item[0])['values'][0]
+        
+        # Fetch and display full student info
+        cursor.execute("SELECT * FROM students WHERE mssv = ?", (mssv,)) 
+        student = cursor.fetchone()
+        if student:
+            self.student_info_frame = display_student_info_frame(self.main_container, student)
+
     def advanced_search(self):
+        """Perform an advanced search based on faculty and name."""
+        # Ensure the tree is initialized
+        if not hasattr(self, 'tree') or self.tree is None:
+            messagebox.showerror("Lỗi", "Danh sách kết quả chưa được khởi tạo! Vui lòng mở chức năng tìm kiếm trước.")
+            return
+
         faculty = self.faculty_search.get().strip()
         name = self.name_search.get().strip()
-        
+
         # Clear existing items
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
-        if not faculty and not name:
-            messagebox.showwarning("Cảnh báo", "Vui lòng nhập ít nhất một điều kiện tìm kiếm!")
+
+        results, error_message = perform_advanced_search(faculty, name, cursor)
+
+        if error_message:
+            messagebox.showwarning("Cảnh báo", error_message)
             return
-        
-        # Build query based on search conditions
-        query = "SELECT * FROM students WHERE 1=1"
-        params = []
-        
-        if faculty:
-            query += " AND faculty = ?"
-            params.append(faculty)
-        
-        if name:
-            query += " AND name LIKE ?"
-            params.append(f"%{name}%")
-        
-        cursor.execute(query, params)
-        results = cursor.fetchall()
-        
-        if not results:
-            messagebox.showinfo("Thông báo", "Không tìm thấy kết quả nào!")
-            return
-        
+
         # Display results in treeview
         for student in results:
             self.tree.insert('', 'end', values=(
@@ -412,31 +305,15 @@ class StudentApp:
                 student[11]  # status
             ))
 
-    def show_selected_student(self, event):
-        selected_item = self.tree.selection()
-        if not selected_item:
-            return
-        
-        # Get MSSV from selected item
-        mssv = self.tree.item(selected_item[0])['values'][0]
-        
-        # Fetch and display full student info
-        cursor.execute("SELECT * FROM students WHERE mssv = ?", (mssv,))
-        student = cursor.fetchone()
-        if student:
-            self.display_student_info(student)
-
     def search_student(self):
         mssv = self.search_entry.get().strip()
         if not mssv:
             messagebox.showerror("Lỗi", "Vui lòng nhập MSSV!")
             return
             
-        cursor.execute("SELECT * FROM students WHERE mssv = ?", (mssv,))
-        student = cursor.fetchone()
-        
+        student = fetch_student_by_mssv(mssv, cursor)
         if student:
-            self.display_student_info(student)
+            self.student_info_frame = display_student_info_frame(self.main_container, student)
         else:
             messagebox.showinfo("Thông báo", "Không tìm thấy sinh viên!")
             if self.student_info_frame:
@@ -607,99 +484,38 @@ class StudentApp:
 
     def update_student(self, mssv):
         data = {key: entry.get().strip() for key, entry in self.update_entries.items()}
-        
-        # Validate input
-        if not data["Họ Tên"]:
-            logger.warning(f"Update failed - Empty name for MSSV: {mssv}")
-            messagebox.showerror("Lỗi", "Họ Tên không được để trống!")
-            return
-        if not is_valid_date(data["Ngày sinh"]):
-            messagebox.showerror("Lỗi", "Ngày sinh không hợp lệ! Định dạng: dd/mm/yyyy")
-            return
-        if data["Khoa"] not in get_valid_options('faculty'):
-            messagebox.showerror("Lỗi", "Khoa không hợp lệ!")
-            return
-        if data["Tình trạng"] not in get_valid_options('status'):
-            messagebox.showerror("Lỗi", "Tình trạng không hợp lệ!")
-            return
-        if not is_valid_email(data["Email"]):
-            messagebox.showerror("Lỗi", "Email không hợp lệ!")
-            return
-        if not is_valid_phone(data["Số điện thoại"]):
-            messagebox.showerror("Lỗi", "Số điện thoại không hợp lệ (10-11 số)!")
+        error = validate_student_data(data)
+        if error:
+            logger.warning(f"Update failed - {error}")
+            messagebox.showerror("Lỗi", error)
             return
 
         try:
-            cursor.execute('''
-                UPDATE students 
-                SET name = ?, dob = ?, gender = ?, faculty = ?, course = ?,
-                    program = ?, address = ?, email = ?, phone = ?, status = ?
-                WHERE mssv = ?
-            ''', (
-                data["Họ Tên"], data["Ngày sinh"], data["Giới tính"],
-                data["Khoa"], data["Khóa"], data["Chương trình"],
-                data["Địa chỉ"], data["Email"], data["Số điện thoại"],
-                data["Tình trạng"], mssv
-            ))
-            conn.commit()
+            update_student_in_db(mssv, data, cursor, conn)
             logger.info(f"Updated student: {mssv} - {data['Họ Tên']}")
             messagebox.showinfo("Thành công", "Cập nhật thông tin sinh viên thành công!")
-            self.refresh_tree()
             
-            # Clear entries
             for entry in self.update_entries.values():
                 entry.delete(0, tk.END)
-                
         except sqlite3.Error as e:
             logger.error(f"Database error while updating student {mssv}: {str(e)}")
             messagebox.showerror("Lỗi", f"Lỗi khi cập nhật: {str(e)}")
-        
-        tk.Button(self.current_frame, text="Tìm Kiếm", command=self.search_student).pack(side=tk.LEFT, padx=5)
-
-    def validate_input(self, data):
-        if not data["MSSV"] or not data["Họ Tên"]:
-            return "MSSV và Họ Tên không được để trống!"
-        if not is_valid_date(data["Ngày sinh"]):
-            return "Ngày sinh không hợp lệ! Định dạng: dd/mm/yyyy"
-        if data["Khoa"] not in get_valid_options('faculty'):
-            return "Khoa không hợp lệ!"
-        if data["Tình trạng"] not in get_valid_options('status'):
-            return "Tình trạng không hợp lệ!"
-        if data["Chương trình"] and data["Chương trình"] not in get_valid_options('program'):
-            return "Chương trình không hợp lệ!"
-        if not is_valid_email(data["Email"]):
-            return "Email không hợp lệ!"
-        if not is_valid_phone(data["Số điện thoại"]):
-            return "Số điện thoại không hợp lệ (10-11 số)!"
-        return None
 
     def add_student(self):
         data = {key: entry.get().strip() for key, entry in self.entries.items()}
-        
-        error = self.validate_input(data)
+        error = validate_student_data(data)
         if error:
             logger.warning(f"Invalid student data: {error}")
             messagebox.showerror("Lỗi", error)
             return
 
         try:
-            cursor.execute('''
-                INSERT INTO students (mssv, name, dob, gender, faculty, course, program, 
-                                    address, email, phone, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                data["MSSV"], data["Họ Tên"], data["Ngày sinh"], data["Giới tính"],
-                data["Khoa"], data["Khóa"], data["Chương trình"], data["Địa chỉ"],
-                data["Email"], data["Số điện thoại"], data["Tình trạng"]
-            ))
-            conn.commit()
+            add_student_to_db(data, cursor, conn)
             logger.info(f"Added new student: {data['MSSV']} - {data['Họ Tên']}")
             messagebox.showinfo("Thành công", "Thêm sinh viên thành công!")
-            self.refresh_tree()
             
             for entry in self.entries.values():
                 entry.delete(0, tk.END)
-                
         except sqlite3.IntegrityError:
             logger.error(f"Failed to add student - Duplicate MSSV: {data['MSSV']}")
             messagebox.showerror("Lỗi", "MSSV đã tồn tại!")
@@ -711,8 +527,7 @@ class StudentApp:
             messagebox.showerror("Lỗi", "Vui lòng nhập MSSV!")
             return
             
-        cursor.execute("SELECT name FROM students WHERE mssv = ?", (mssv,))
-        student = cursor.fetchone()
+        student = fetch_student_by_mssv(mssv, cursor)
         if not student:
             logger.warning(f"Delete attempted - Student not found: {mssv}")
             messagebox.showerror("Lỗi", "Không tìm thấy sinh viên!")
@@ -720,11 +535,9 @@ class StudentApp:
             
         if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn xóa sinh viên này?"):
             try:
-                cursor.execute("DELETE FROM students WHERE mssv = ?", (mssv,))
-                conn.commit()
-                logger.info(f"Deleted student: {mssv} - {student[0]}")
+                delete_student_from_db(mssv, cursor, conn)
+                logger.info(f"Deleted student: {mssv} - {student[2]}")
                 messagebox.showinfo("Thành công", "Xóa sinh viên thành công!")
-                self.refresh_tree()
                 self.mssv_delete_entry.delete(0, tk.END)
             except sqlite3.Error as e:
                 logger.error(f"Error deleting student {mssv}: {str(e)}")
@@ -793,9 +606,7 @@ class StudentApp:
         
         value = listbox.get(selection[0])
         if messagebox.askyesno("Xác nhận", f"Bạn có chắc muốn xóa '{value}'?"):
-            cursor.execute("DELETE FROM settings WHERE category = ? AND value = ?", 
-                          (category, value))
-            conn.commit()
+            delete_category(category, value)
             listbox.delete(selection[0])
             
             # Update the comboboxes in add/update forms
@@ -845,34 +656,43 @@ class StudentApp:
         tk.Button(export_frame, text="Xuất ra Excel", 
                  command=lambda: self.export_data('excel')).pack(side=tk.LEFT, padx=5, pady=5)
 
+    def refresh_tree(self):
+        """Refresh the TreeView with the latest data from the database."""
+        if not hasattr(self, 'tree') or self.tree is None:
+            logger.warning("TreeView is not initialized. Cannot refresh.")
+            return
+
+        refresh_tree(self.tree, cursor)
+
     def import_data(self, format_type):
+        """Import student data from a CSV or Excel file."""
         filename = filedialog.askopenfilename(
             filetypes=[('CSV files', '*.csv')] if format_type == 'csv' else [('Excel files', '*.xlsx')]
         )
         if not filename:
             return
-            
+
         logger.info(f"Importing data from {filename}")
         try:
             if format_type == 'csv':
-                df = pd.read_csv(filename)
+                df = pd.read_csv(filename, dtype={'phone': str})  # Ensure phone is read as a string
             else:
-                df = pd.read_excel(filename)
-                
+                df = pd.read_excel(filename, dtype={'phone': str})  # Ensure phone is read as a string
+
             # Validate column names
             required_columns = [
                 'mssv', 'name', 'dob', 'gender', 'faculty', 'course',
                 'program', 'address', 'email', 'phone', 'status'
             ]
-            
+
             if not all(col in df.columns for col in required_columns):
                 messagebox.showerror("Lỗi", "File không đúng định dạng! Thiếu cột bắt buộc.")
                 return
-                
+
             # Validate and import data
             success_count = 0
             error_count = 0
-            
+
             for _, row in df.iterrows():
                 data = {
                     "MSSV": str(row['mssv']),
@@ -884,19 +704,20 @@ class StudentApp:
                     "Chương trình": str(row['program']),
                     "Địa chỉ": str(row['address']),
                     "Email": str(row['email']),
-                    "Số điện thoại": str(row['phone']),
+                    "Số điện thoại": str(row['phone']),  # Ensure phone is treated as a string
                     "Tình trạng": str(row['status'])
                 }
-                
-                error = self.validate_input(data)
+
+                error = validate_student_data(data)
                 if error:
                     error_count += 1
+                    messagebox.showerror("Lỗi", error)
                     continue
-                    
+
                 try:
                     cursor.execute('''
                         INSERT INTO students (mssv, name, dob, gender, faculty, course,
-                                            program, address, email, phone, status)
+                                              program, address, email, phone, status)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         data["MSSV"], data["Họ Tên"], data["Ngày sinh"], data["Giới tính"],
@@ -906,13 +727,12 @@ class StudentApp:
                     success_count += 1
                 except sqlite3.IntegrityError:
                     error_count += 1
-                    
+
             conn.commit()
             logger.info(f"Import completed: {success_count} successful, {error_count} failed")
-            messagebox.showinfo("Thành công", 
-                              f"Đã nhập {success_count} sinh viên!\nLỗi: {error_count} sinh viên")
-            self.refresh_tree()
-            
+            messagebox.showinfo("Thành công",
+                                f"Đã nhập {success_count} sinh viên!\nLỗi: {error_count} sinh viên")
+
         except Exception as e:
             logger.error(f"Error during import: {str(e)}")
             messagebox.showerror("Lỗi", f"Lỗi khi đọc file: {str(e)}")
@@ -1014,6 +834,21 @@ Build Date: {BUILD_DATE}
             messagebox.showinfo("Thành công", "Đã lưu cấu hình!")
         except Exception as e:
             messagebox.showerror("Lỗi", f"Lỗi khi lưu cấu hình: {str(e)}")
+
+    def show_export_confirmation(self):
+        """Show export confirmation dialog."""
+        mssv = self.search_entry.get().strip()
+        if not mssv:
+            messagebox.showerror("Lỗi", "Vui lòng nhập MSSV!")
+            return
+
+        export_frame = tk.Toplevel(self.root)
+        export_frame.title("Xuất Giấy Xác Nhận")
+        export_frame.geometry("300x150")
+
+        tk.Label(export_frame, text="Chọn định dạng xuất:").pack(pady=10)
+        tk.Button(export_frame, text="Xuất HTML", command=lambda: export_student_status(mssv, "html")).pack(pady=5)
+        tk.Button(export_frame, text="Xuất PDF", command=lambda: export_student_status(mssv, "pdf")).pack(pady=5)
 
 def main():
     try:
